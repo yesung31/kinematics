@@ -306,7 +306,7 @@ class DoublePendulum(BaseKinematicsDataModule):
         test_size: int = 16384,
         trajectory_length: int = 65536,
         num_energy_levels: int = 8,
-        seq_len: int = 32,
+        seq_len: int = 16,
         same_energy: bool = True,
         min_time_dist: int = 0,
         max_time_dist: int | None = None,
@@ -332,13 +332,14 @@ class DoublePendulum(BaseKinematicsDataModule):
         g: float = 9.81,
         damping: float = 0.0,
         include_velocities: bool = False,
+        as_dict: bool = False,
         **kwargs,
     ):
-        super().__init__(batch_size=batch_size, num_workers=num_workers)
+        super().__init__(batch_size=batch_size, num_workers=num_workers, as_dict=as_dict)
         self.save_hyperparameters()
         base_z_dim = 4 if include_velocities else 2
         self.z_dim = kwargs.get("z_dim", base_z_dim + (1 if same_energy else 0))
-        multiplier = seq_len if (seq_len > 1 or not squeeze_single) else 1
+        multiplier = seq_len if (seq_len > 1 or not squeeze_single) and not as_dict else 1
         if mixing_type == "image":
             base_x_dim = kwargs.get("x_dim", [3, img_size, img_size])
             self.x_dim = [base_x_dim[0] * multiplier, base_x_dim[1], base_x_dim[2]]
@@ -364,6 +365,7 @@ class DoublePendulum(BaseKinematicsDataModule):
             "x_dim": base_x_dim,
             "squeeze_single": squeeze_single,
             "target_frame": target_frame,
+            "as_dict": as_dict,
             "dt": dt,
             "l1": l1,
             "l2": l2,

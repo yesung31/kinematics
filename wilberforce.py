@@ -247,7 +247,7 @@ class Wilberforce(BaseKinematicsDataModule):
         test_size: int = 16384,
         trajectory_length: int = 65536,
         num_energy_levels: int = 8,
-        seq_len: int = 32,
+        seq_len: int = 16,
         same_energy: bool = True,
         min_time_dist: int = 0,
         max_time_dist: int | None = None,
@@ -266,12 +266,13 @@ class Wilberforce(BaseKinematicsDataModule):
         dt: float = 0.05,
         squeeze_single: bool = True,
         target_frame: str = "last",
+        as_dict: bool = False,
         **kwargs,
     ):
-        super().__init__(batch_size=batch_size, num_workers=num_workers)
+        super().__init__(batch_size=batch_size, num_workers=num_workers, as_dict=as_dict)
         self.save_hyperparameters()
         self.z_dim = kwargs.get("z_dim", 3 if same_energy else 2)
-        multiplier = seq_len if (seq_len > 1 or not squeeze_single) else 1
+        multiplier = seq_len if (seq_len > 1 or not squeeze_single) and not as_dict else 1
         if mixing_type == "image":
             base_x_dim = kwargs.get("x_dim", [3, img_size, img_size])
             self.x_dim = [base_x_dim[0] * multiplier, base_x_dim[1], base_x_dim[2]]
@@ -297,6 +298,7 @@ class Wilberforce(BaseKinematicsDataModule):
             "x_dim": base_x_dim,
             "squeeze_single": squeeze_single,
             "target_frame": target_frame,
+            "as_dict": as_dict,
             "dt": dt,
             "model_seed": seed,
             **kwargs,

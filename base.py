@@ -199,7 +199,7 @@ class BaseKinematicsDataset(Dataset):
         size: int = 65536,
         trajectory_length: int = 65536,
         num_energy_levels: int = 8,
-        seq_len: int = 32,
+        seq_len: int = 16,
         same_energy: bool = True,
         min_time_dist: int = 0,
         max_time_dist: int | None = None,
@@ -210,6 +210,8 @@ class BaseKinematicsDataset(Dataset):
         return_z_full: bool = False,
         squeeze_single: bool = True,
         target_frame: str = "last",
+        as_dict: bool = False,
+        flatten_sequence: bool | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -231,6 +233,10 @@ class BaseKinematicsDataset(Dataset):
         self.return_z_full = return_z_full
         self.squeeze_single = squeeze_single
         self.target_frame = target_frame
+        self.as_dict = as_dict
+        self.flatten_sequence = flatten_sequence if flatten_sequence is not None else (not as_dict)
+        self.as_dict = as_dict
+        self.flatten_sequence = flatten_sequence if flatten_sequence is not None else (not as_dict)
         self.simulation = None
         self.trajectories = None
         self.renderer = None
@@ -319,7 +325,7 @@ class BaseKinematicsDataset(Dataset):
         x1 = self._apply_mixing(z1)
         x2 = self._apply_mixing(z2)
 
-        if self.seq_len > 1 or not self.squeeze_single:
+        if self.flatten_sequence and (self.seq_len > 1 or not self.squeeze_single):
             if self.mixing_type == "image":
                 x1 = x1.reshape(-1, x1.shape[-2], x1.shape[-1])
                 x2 = x2.reshape(-1, x2.shape[-2], x2.shape[-1])
@@ -352,6 +358,15 @@ class BaseKinematicsDataset(Dataset):
                     [target_z2, energy_val2.expand(target_z2.shape[0], 1)], dim=-1
                 )
 
+        if self.as_dict:
+            dummy_action = torch.zeros((self.seq_len, 1), dtype=torch.float32)
+            return {
+                "pixels": x1,
+                "state": z1,
+                "action": dummy_action,
+                "target_z": target_z1,
+            }
+
         mask = torch.ones_like(target_z1)
 
         if self.return_z_full:
@@ -366,13 +381,16 @@ class BaseKinematicsDataModule(LightningDataModule):
         self,
         batch_size: int = 64,
         num_workers: int = 0,
+        as_dict: bool = False,
         **kwargs,
     ):
         super().__init__()
         self.save_hyperparameters()
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.dataset_kwargs = {}
+        self.action_dim = 1
+        self.effective_action_dim = 1
+        self.dataset_kwargs = {"as_dict": as_dict}
 
     def setup(self, stage=None):
         if stage in ("fit", "validate", None):
