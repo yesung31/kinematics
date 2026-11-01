@@ -3,13 +3,13 @@ from typing import Literal
 
 import numpy as np
 import torch
-from PIL import Image, ImageDraw
 
 from .base import (
     BaseKinematicsDataModule,
     BaseKinematicsDataset,
     RealNVP,
 )
+from .render import DoublePendulumRenderer
 
 DoublePendulumRealNVP = RealNVP
 
@@ -133,54 +133,6 @@ class DoublePendulumSimulation:
         return torch.from_numpy(res).float()
 
 
-class DoublePendulumRenderer:
-    def __init__(
-        self,
-        img_size: int = 64,
-        l1: float = 1.0,
-        l2: float = 1.0,
-    ):
-        self.img_size = img_size
-        self.l1 = l1
-        self.l2 = l2
-        self.scale = (img_size * 0.40) / (l1 + l2)
-
-    def render_frame(self, theta1: float, theta2: float) -> torch.Tensor:
-        size = self.img_size
-        img = Image.new("RGB", (size, size), color=(245, 245, 248))
-        draw = ImageDraw.Draw(img)
-
-        cx = size / 2.0
-        cy = size / 2.0
-
-        x1 = cx + self.scale * self.l1 * math.sin(theta1)
-        y1 = cy + self.scale * self.l1 * math.cos(theta1)
-        x2 = x1 + self.scale * self.l2 * math.sin(theta2)
-        y2 = y1 + self.scale * self.l2 * math.cos(theta2)
-
-        line_w = max(2, int(size * 0.035))
-        draw.line([(cx, cy), (x1, y1)], fill=(70, 75, 85), width=line_w)
-        draw.line([(x1, y1), (x2, y2)], fill=(70, 75, 85), width=line_w)
-
-        r_pivot = max(2.0, size * 0.04)
-        draw.ellipse([cx - r_pivot, cy - r_pivot, cx + r_pivot, cy + r_pivot], fill=(100, 105, 115))
-
-        r_bob1 = max(3.0, size * 0.06)
-        draw.ellipse([x1 - r_bob1, y1 - r_bob1, x1 + r_bob1, y1 + r_bob1], fill=(230, 50, 50))
-
-        r_bob2 = max(3.0, size * 0.06)
-        draw.ellipse([x2 - r_bob2, y2 - r_bob2, x2 + r_bob2, y2 + r_bob2], fill=(50, 100, 230))
-
-        arr = np.array(img, dtype=np.float32) / 255.0
-        return torch.from_numpy(arr).permute(2, 0, 1)
-
-    def render_sequence(self, theta1_seq: torch.Tensor, theta2_seq: torch.Tensor) -> torch.Tensor:
-        frames = []
-        for th1, th2 in zip(theta1_seq, theta2_seq):
-            frames.append(self.render_frame(float(th1), float(th2)))
-        return torch.stack(frames, dim=0)
-
-
 class DoublePendulumDataset(BaseKinematicsDataset):
     def __init__(
         self,
@@ -204,6 +156,7 @@ class DoublePendulumDataset(BaseKinematicsDataset):
         img_size: int = 64,
         sample_seed: int = 42,
         model_seed: int = 42,
+        mixing_seed: int | None = None,
         return_z_full: bool = False,
         squeeze_single: bool = True,
         target_frame: str = "last",
@@ -231,6 +184,7 @@ class DoublePendulumDataset(BaseKinematicsDataset):
             img_size=img_size,
             sample_seed=sample_seed,
             model_seed=model_seed,
+            mixing_seed=mixing_seed,
             return_z_full=return_z_full,
             squeeze_single=squeeze_single,
             target_frame=target_frame,
@@ -259,7 +213,9 @@ class DoublePendulumDataset(BaseKinematicsDataset):
         self.trajectories = self.simulation.trajectories
         self.num_energy_levels = self.simulation.num_energy_levels
 
-        self.renderer = DoublePendulumRenderer(img_size=img_size, l1=l1, l2=l2)
+        self.renderer = DoublePendulumRenderer(
+            img_size=img_size, l1=l1, l2=l2, seed=self.mixing_seed
+        )
 
         self.x_dim = kwargs.get("x_dim", self.z_dim)
         if self.mixing_type == "realnvp":
@@ -269,7 +225,7 @@ class DoublePendulumDataset(BaseKinematicsDataset):
                 out_features=out_features,
                 num_layers=flow_layers,
                 hidden_features=flow_hidden,
-                seed=model_seed,
+                seed=self.mixing_seed,
                 input_scale=nonlinearity_scale,
                 scale_max=scale_max,
                 shift_scale=shift_scale,
@@ -322,6 +278,7 @@ class DoublePendulum(BaseKinematicsDataModule):
         batch_size: int = 64,
         num_workers: int = 0,
         seed: int = 42,
+        mixing_seed: int | None = None,
         dt: float = 0.05,
         squeeze_single: bool = True,
         target_frame: str = "last",
@@ -335,7 +292,18 @@ class DoublePendulum(BaseKinematicsDataModule):
         as_dict: bool = False,
         **kwargs,
     ):
-        super().__init__(batch_size=batch_size, num_workers=num_workers, as_dict=as_dict)
+        eff_mixing_seed = mixing_seed if mixing_seed is not None else kwargs.get("model_seed", seed)
+        super().__init__(
+            batch_size=batch_size,
+            num_workers=num_workers,
+            as_dict=as_dict,
+            mixing_seed=eff_mixing_seed,
+            seed=seed,
+            size=size,
+            val_size=val_size,
+            test_size=test_size,
+            **kwargs,
+        )
         self.save_hyperparameters()
         base_z_dim = 4 if include_velocities else 2
         self.z_dim = kwargs.get("z_dim", base_z_dim + (1 if same_energy else 0))
@@ -374,7 +342,8 @@ class DoublePendulum(BaseKinematicsDataModule):
             "g": g,
             "damping": damping,
             "include_velocities": include_velocities,
-            "model_seed": seed,
+            "model_seed": eff_mixing_seed,
+            "mixing_seed": eff_mixing_seed,
             **kwargs,
         }
 

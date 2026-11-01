@@ -207,6 +207,7 @@ class BaseKinematicsDataset(Dataset):
         img_size: int = 64,
         sample_seed: int = 42,
         model_seed: int = 42,
+        mixing_seed: int | None = None,
         return_z_full: bool = False,
         squeeze_single: bool = True,
         target_frame: str = "last",
@@ -229,12 +230,11 @@ class BaseKinematicsDataset(Dataset):
         self.mixing_type = mixing_type
         self.img_size = img_size
         self.sample_seed = sample_seed
-        self.model_seed = model_seed
+        self.mixing_seed = mixing_seed if mixing_seed is not None else model_seed
+        self.model_seed = self.mixing_seed
         self.return_z_full = return_z_full
         self.squeeze_single = squeeze_single
         self.target_frame = target_frame
-        self.as_dict = as_dict
-        self.flatten_sequence = flatten_sequence if flatten_sequence is not None else (not as_dict)
         self.as_dict = as_dict
         self.flatten_sequence = flatten_sequence if flatten_sequence is not None else (not as_dict)
         self.simulation = None
@@ -382,6 +382,7 @@ class BaseKinematicsDataModule(LightningDataModule):
         batch_size: int = 64,
         num_workers: int = 0,
         as_dict: bool = False,
+        mixing_seed: int | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -390,7 +391,16 @@ class BaseKinematicsDataModule(LightningDataModule):
         self.num_workers = num_workers
         self.action_dim = 1
         self.effective_action_dim = 1
-        self.dataset_kwargs = {"as_dict": as_dict}
+        eff_mixing_seed = (
+            mixing_seed
+            if mixing_seed is not None
+            else kwargs.get("model_seed", kwargs.get("seed", 42))
+        )
+        self.dataset_kwargs = {
+            "as_dict": as_dict,
+            "mixing_seed": eff_mixing_seed,
+            "model_seed": eff_mixing_seed,
+        }
 
     def setup(self, stage=None):
         if stage in ("fit", "validate", None):

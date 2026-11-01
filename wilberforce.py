@@ -1,15 +1,14 @@
 import math
 from typing import Literal
 
-import numpy as np
 import torch
-from PIL import Image, ImageDraw
 
 from .base import (
     BaseKinematicsDataModule,
     BaseKinematicsDataset,
     RealNVP,
 )
+from .render import WilberforceRenderer
 
 WilberforceRealNVP = RealNVP
 
@@ -57,87 +56,6 @@ class WilberforceSimulation:
         return torch.stack(trajectories, dim=0)
 
 
-class WilberforceRenderer:
-    def __init__(
-        self,
-        img_size: int = 64,
-        max_amplitude: float = 0.5,
-    ):
-        self.img_size = img_size
-        self.max_amplitude = max_amplitude
-        self.colors = [
-            (230, 50, 50),
-            (50, 200, 50),
-            (50, 100, 230),
-            (230, 200, 50),
-        ]
-
-    def render_frame(self, z: float, theta: float) -> torch.Tensor:
-        size = self.img_size
-        img = Image.new("RGB", (size, size), color=(245, 245, 248))
-        draw = ImageDraw.Draw(img)
-
-        cx = size / 2.0
-        y_top = size * 0.08
-        y_eq = size * 0.52
-        max_pix_offset = size * 0.22
-        clamped_z = max(-self.max_amplitude, min(self.max_amplitude, z))
-        y_bob = y_eq + (clamped_z / self.max_amplitude) * max_pix_offset
-
-        draw.rectangle([cx - size * 0.15, 0, cx + size * 0.15, y_top], fill=(120, 120, 125))
-
-        r_bob = size * 0.08
-        spring_bottom = y_bob - r_bob
-        n_coils = 8
-        coil_width = size * 0.07
-        points = [(cx, y_top)]
-        for i in range(1, n_coils * 2):
-            frac = i / (n_coils * 2.0)
-            py = y_top + frac * (spring_bottom - y_top)
-            direction = -1 if i % 2 == 1 else 1
-            px = cx + direction * coil_width
-            points.append((px, py))
-        points.append((cx, spring_bottom))
-        draw.line(points, fill=(80, 80, 85), width=max(1, int(size * 0.025)))
-
-        draw.ellipse([cx - r_bob, y_bob - r_bob, cx + r_bob, y_bob + r_bob], fill=(40, 45, 55))
-
-        arm_len = size * 0.26
-        pitch = 0.45
-        tip_radius = max(1.5, size * 0.035)
-
-        for i in range(4):
-            angle = theta + i * (math.pi / 2.0)
-            dx = arm_len * math.cos(angle)
-            dy = arm_len * pitch * math.sin(angle)
-            tip_x = cx + dx
-            tip_y = y_bob + dy
-
-            draw.line(
-                [(cx, y_bob), (tip_x, tip_y)],
-                fill=(70, 75, 85),
-                width=max(1, int(size * 0.02)),
-            )
-            draw.ellipse(
-                [
-                    tip_x - tip_radius,
-                    tip_y - tip_radius,
-                    tip_x + tip_radius,
-                    tip_y + tip_radius,
-                ],
-                fill=self.colors[i],
-            )
-
-        arr = np.array(img, dtype=np.float32) / 255.0
-        return torch.from_numpy(arr).permute(2, 0, 1)
-
-    def render_sequence(self, z_seq: torch.Tensor, theta_seq: torch.Tensor) -> torch.Tensor:
-        frames = []
-        for z_val, th_val in zip(z_seq, theta_seq):
-            frames.append(self.render_frame(float(z_val), float(th_val)))
-        return torch.stack(frames, dim=0)
-
-
 class WilberforceDataset(BaseKinematicsDataset):
     def __init__(
         self,
@@ -160,6 +78,7 @@ class WilberforceDataset(BaseKinematicsDataset):
         img_size: int = 64,
         sample_seed: int = 42,
         model_seed: int = 42,
+        mixing_seed: int | None = None,
         return_z_full: bool = False,
         squeeze_single: bool = True,
         target_frame: str = "last",
@@ -180,6 +99,7 @@ class WilberforceDataset(BaseKinematicsDataset):
             img_size=img_size,
             sample_seed=sample_seed,
             model_seed=model_seed,
+            mixing_seed=mixing_seed,
             return_z_full=return_z_full,
             squeeze_single=squeeze_single,
             target_frame=target_frame,
@@ -200,7 +120,9 @@ class WilberforceDataset(BaseKinematicsDataset):
         self.num_energy_levels = self.simulation.num_energy_levels
 
         max_amp = float(self.trajectories[..., 0].abs().max())
-        self.renderer = WilberforceRenderer(img_size=img_size, max_amplitude=max_amp)
+        self.renderer = WilberforceRenderer(
+            img_size=img_size, max_amplitude=max_amp, seed=self.mixing_seed
+        )
 
         self.x_dim = kwargs.get("x_dim", 2)
         if self.mixing_type == "realnvp":
@@ -210,7 +132,7 @@ class WilberforceDataset(BaseKinematicsDataset):
                 out_features=out_features,
                 num_layers=flow_layers,
                 hidden_features=flow_hidden,
-                seed=model_seed,
+                seed=self.mixing_seed,
                 input_scale=nonlinearity_scale,
                 scale_max=scale_max,
                 shift_scale=shift_scale,
@@ -263,13 +185,25 @@ class Wilberforce(BaseKinematicsDataModule):
         batch_size: int = 64,
         num_workers: int = 0,
         seed: int = 42,
+        mixing_seed: int | None = None,
         dt: float = 0.05,
         squeeze_single: bool = True,
         target_frame: str = "last",
         as_dict: bool = False,
         **kwargs,
     ):
-        super().__init__(batch_size=batch_size, num_workers=num_workers, as_dict=as_dict)
+        eff_mixing_seed = mixing_seed if mixing_seed is not None else kwargs.get("model_seed", seed)
+        super().__init__(
+            batch_size=batch_size,
+            num_workers=num_workers,
+            as_dict=as_dict,
+            mixing_seed=eff_mixing_seed,
+            seed=seed,
+            size=size,
+            val_size=val_size,
+            test_size=test_size,
+            **kwargs,
+        )
         self.save_hyperparameters()
         self.z_dim = kwargs.get("z_dim", 3 if same_energy else 2)
         multiplier = seq_len if (seq_len > 1 or not squeeze_single) and not as_dict else 1
@@ -300,7 +234,8 @@ class Wilberforce(BaseKinematicsDataModule):
             "target_frame": target_frame,
             "as_dict": as_dict,
             "dt": dt,
-            "model_seed": seed,
+            "model_seed": eff_mixing_seed,
+            "mixing_seed": eff_mixing_seed,
             **kwargs,
         }
 
